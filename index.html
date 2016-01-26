@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Is the Web Getting Slower?</title>
+<script src="https://telemetry.mozilla.org/v2/telemetry.js"></script>
+<script src="https://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.12.0/jquery.min.js"></script>
+<script src="https://telemetry.mozilla.org/new-pipeline/lib/metricsgraphics.js"></script>
+<link rel="stylesheet" href="https://telemetry.mozilla.org/new-pipeline/style/metricsgraphics.css"></script>
+<style>
+
+body {
+  display: flex;
+  flex-flow: row wrap;
+}
+
+.plot-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.plot {
+  width: 48vw;
+  height: 48vh;
+}
+
+table {
+  border-spacing: 0;
+}
+
+tr:first-child {
+  font-weight: bold;
+  font-family: sans-serif;
+}
+
+td {
+  border: 1px solid grey;
+  padding: 2px;
+}
+
+td:first-child {
+  border-left: 0;
+  border-right: 1px solid grey;
+}
+
+td:last-child {
+  border-right: 0;
+  border-left: 1px solid grey;
+}
+
+tr:first-child td {
+  border-top: 0;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+</style>
+</head>
+<body>
+<table id="data-table">
+<tr></tr>
+</table>
+<script>
+const MEASURES = [
+  "CYCLE_COLLECTOR",
+  "FX_PAGE_LOAD_MS",
+  "GC_MS",
+  "GC_ANIMATION_MS",
+  "GC_MAX_PAUSE_MS",
+  "GC_MARK_MS",
+  "GC_SWEEP_MS",
+  "GC_MARK_ROOTS_MS",
+  "GC_MARK_GRAY_MS",
+  "GC_SLICE_MS",
+  "GC_SCC_SWEEP_TOTAL_MS",
+  // Data fail? No plot.
+  //"GC_SCC_SWEEP_TOTAL_MAX_PAUSE_MS",
+  "GC_MINOR_US",
+  "EVENTLOOP_UI_LAG_EXP_MS",
+  "SLOW_SCRIPT_NOTICE_COUNT",
+  /*"COMPOSITE_TIME",
+  "COMPOSITE_FRAME_ROUNDTRIP_TIME", // these two just don't show anything */
+  "MEMORY_FREE_PURGED_PAGES_MS",
+  "MEMORY_HEAP_ALLOCATED",
+  "MEMORY_HEAP_COMMITTED_UNUSED_RATIO",
+  // It's usually 0. Not helpful.
+  //"MEMORY_IMAGES_CONTENT_USED_UNCOMPRESSED",
+  "MEMORY_JS_COMPARTMENTS_SYSTEM",
+  "MEMORY_JS_COMPARTMENTS_USER",
+  "MEMORY_JS_GC_HEAP",
+  "MEMORY_JS_MAIN_RUNTIME_TEMPORARY_PEAK",
+  "MEMORY_RESIDENT",
+  "MEMORY_STORAGE_SQLITE",
+];
+// Dates chosen for when there were large amounts of submissions for release/42
+const START_DATE = new Date("2015-11-10");
+const END_DATE = new Date("2015-12-16");
+
+function createDataRow(...data) {
+  var row = document.createElement("tr");
+  data.forEach(datum => {
+    var datumEl = document.createElement("td");
+    datumEl.textContent = datum;
+    row.appendChild(datumEl);
+  });
+  return row;
+}
+
+var dataTableEl = document.getElementById("data-table");
+Telemetry.init(() => {
+  MEASURES.forEach(measure => {
+    var plotEl = document.createElement('div');
+    plotEl.className = "plot";
+    var plotContainerEl = document.createElement('div');
+    plotContainerEl.className = "plot-container";
+    plotContainerEl.appendChild(plotEl)
+    document.body.appendChild(plotContainerEl);
+
+    Telemetry.getEvolution(
+      "release",
+      "42",
+      measure,
+      {},
+      true,
+      evolutionMap => {
+        if (!("" in evolutionMap)) {
+          console.warn("Measure " + measure + " has no evolution");
+          return;
+        }
+        var evolution = evolutionMap[""].dateRange(START_DATE, END_DATE);
+        var dates = evolution.dates();
+        var medians = evolution.percentiles(50);
+        var data = dates.map((date, i) => {
+          return {
+            date: date,
+            value: medians[i],
+          };
+        });
+
+        MG.data_graphic({
+          title: measure,
+          data: data,
+          chart_type: "point",
+          full_width: true,
+          full_height: true,
+          target: plotEl,
+          x_accessor: "date",
+          y_accessor: "value",
+          least_squares: true,
+        });
+
+        var [slope, r2, intercept, covariance, seA, seB] = linearLeastSquares(dates.map((date, i) => i + 1), medians);
+
+        var statEl = document.createElement("table");
+        statEl.appendChild(createDataRow("slope", "r2", "30-day %ge", "SE(a)", "SE(b)"));
+        statEl.appendChild(createDataRow(
+          two(slope),
+          two(r2),
+          two(slope * 30 * 100 / (slope * 30 + intercept)) + "%",
+          two(seA),
+          two(seB)
+        ));
+        dataTableEl.appendChild(createDataRow(
+          measure,
+          two(slope),
+          two(r2),
+          two(slope * 30 * 100 / (slope * 30 + intercept)) + "%",
+          two(seA),
+          two(seB)
+        ));
+        plotContainerEl.appendChild(statEl);
+
+      });
+  });
+
+  function two(value) {
+    var absval = Math.abs(value);
+    var digits = 2;
+    if (absval < 1) {
+      digits -= Math.floor(Math.log10(absval));
+    }
+    return Math.round(value * Math.pow(10, digits)) / Math.pow(10, digits);
+  }
+
+  function sum(S) {
+    return S.reduce((prev, cur) => prev + cur);
+  }
+
+  function square(x) {
+    return x * x;
+  }
+
+  // Derived into JS while reading http://mathworld.wolfram.com/LeastSquaresFitting.html
+  function linearLeastSquares(x, y) {
+    var n = x.length; // x.length should === y.length
+    var xbar = sum(x) / n;
+    var ybar = sum(y) / n;
+
+    var SSxx = sum(x.map(xi => square(xi - xbar)));
+    var SSyy = sum(y.map(yi => square(yi - ybar)));
+    var SSxy = sum(x.map((xi, i) => (xi - xbar) * (y[i] - ybar)));
+    /* Wolfram rewrites these to this, which I think is slower
+    var SSxx = sum(x.map(xi => xi * xi)) - n * xbar * xbar;
+    var SSyy = sum(y.map(yi => yi * yi)) - n * ybar * ybar;
+    var SSxy = sum(x.map((xi, i) => xi * y[i])) - n * xbar * ybar;
+    */
+
+    var covariance = SSxy / n;
+    var slope = SSxy / SSxx;
+    var intercept = ybar - slope * xbar;
+    var r2 = square(SSxy) / (SSxx * SSyy);
+
+    var s = Math.sqrt( (SSyy - square(SSxy / SSxx)) / (n - 2) );
+    var seA = s * Math.sqrt( 1 / n + square(xbar) / SSxx );
+    var seB = s / Math.sqrt(SSxx);
+
+    return [slope, r2, intercept, covariance, seA, seB];
+  }
+});
+</script>
+</body>
+</html>
