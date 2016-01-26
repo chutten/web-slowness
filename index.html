@@ -151,7 +151,14 @@ Telemetry.init(() => {
           least_squares: true,
         });
 
-        var [slope, r2, intercept, covariance, seA, seB] = linearLeastSquares(dates.map((date, i) => i + 1), medians);
+        // No decomposition in Chrome :(
+        var result = linearLeastSquares(dates.map((date, i) => i + 1), medians);
+        var slope = result[0];
+        var r2 = result[1];
+        var intercept = result[2];
+        var covariance = result[3];
+        var seA = result[4];
+        var seB = result[5];
 
         var statEl = document.createElement("table");
         statEl.appendChild(createDataRow("slope", "r2", "30-day %ge", "SE(a)", "SE(b)"));
